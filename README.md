@@ -206,6 +206,38 @@ launchctl bootout gui/$UID/de.prospekt.weekly     # stop scheduling
 rm ~/Library/LaunchAgents/de.prospekt.weekly.plist
 ```
 
+## What runs where
+
+The website is refreshed by **GitHub Actions**, so it stays current whether or
+not this Mac is switched on — that was the whole point of moving it there.
+
+| | |
+|---|---|
+| `.github/workflows/weekly.yml` | Mondays 05:20 UTC: scrapes all six chains, caches images, builds and publishes. |
+| `tools/refresh.sh` on the Mac | Fallback. Asks the published page which week it is showing and exits if that is already current, so it normally does nothing. |
+| `.github/workflows/probe.yml` | Manual. Reports which chains answer from a runner, compares REWE strategies. |
+
+### Running from a datacenter IP
+
+The scraper was built on a home connection, and the assumption that Akamai
+would block CI outright turned out to be wrong — `tools/cloud_probe.py`
+measured it. Two findings shaped the setup:
+
+- **All six chains answer a GitHub runner, but only through real Chrome.** With
+  Playwright's bundled Chromium, EDEKA and NETTO return "Access Denied" there
+  exactly as they do locally. What is being scored is the browser fingerprint,
+  not the datacenter IP — so `playwright install chrome` is a hard requirement
+  of the workflow, not a nicety.
+- **REWE intermittently serves an interstitial** titled "Nur einen Moment…"
+  instead of the page. It is not a hard block: the first cloud run lost all 436
+  REWE offers to it, while a strategy comparison over the same six markets
+  scored 6/6 both naively and with retries on a later attempt. `_open_market`
+  now detects that title and retries, and the run reports how many markets
+  stayed blocked rather than quietly returning nothing.
+
+Everything else stays identical between Mac and runner — same scrapers, same
+`run.py`, same `build_site.py`.
+
 ## Publishing to the web
 
 `tools/publish.sh` pushes `web/index.html` to GitHub Pages at the end of every
@@ -218,6 +250,17 @@ gh auth login && tools/setup_pages.sh
 
 Live at **https://g6jjjz4gyb-sketch.github.io/prospekt/** (account
 `g6jjjz4gyb-sketch`, repo `prospekt`, set up 2026-09-02).
+
+Two branches, deliberately: `main` holds the source and the workflows,
+`gh-pages` holds the built site. Each publish *replaces* `gh-pages` with one
+fresh commit — the page is a single ~10 MB file rewritten weekly, so keeping
+its history would grow the repository by that much every week, and
+force-pushing a shared branch would delete the source along with it.
+
+The page also judges its own freshness in the viewer's browser: if the data is
+from an earlier ISO week it shows a red "Veraltet" strip saying how many days
+old it is, instead of going on promising a refresh that has already been
+missed — which is exactly what it did for the month the Mac was switched off.
 
 The scraping stays on this Mac by necessity: the chains sit behind Akamai,
 which blocks datacenter IPs, and the whole approach depends on a real local

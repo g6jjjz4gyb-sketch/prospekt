@@ -5,6 +5,7 @@ interstitial ("Nur einen Moment..."). So we resolve the market once via the
 site's own fragment API, then inject the resulting `wksMarketsCookie` on later
 runs and load the offers page directly -- no navigation, no challenge.
 """
+import datetime as dt
 import json, re, urllib.parse
 
 CHAIN = {"id": "rewe", "name": "REWE", "color": "#cc071e"}
@@ -194,13 +195,103 @@ def _norm(r, market):
 FINGERPRINT_JS = """
 () => {
   const els = [...document.querySelectorAll('div.sos-offer')];
-  const out = {};
+  const out = {cats: {}, week: null};
   els.forEach(e => {
     const nan = e.getAttribute('data-offer-nan');
-    if (nan) out[nan] = e.getAttribute('data-category') || null;
+    if (!nan) return;
+    out.cats[nan] = e.getAttribute('data-category') || null;
+    out.week = out.week || e.getAttribute('data-offer-week');
   });
   return out;
 }"""
+
+
+# One tile's markup, fetched straight from the fragment API instead of waiting
+# for the page to hydrate it. Scrolling 400 tiles into view took minutes and
+# produced nothing at all on a CI runner, where the tiles never rendered.
+DETAIL_JS = r"""
+async ([url, items, ids]) => {
+  const res = await fetch(url, {
+    method: 'POST', credentials: 'include',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(items),
+  });
+  if (!res.ok) return {__err: res.status};
+  let data;
+  try { data = await res.json(); } catch (e) { return {__err: 'parse'}; }
+  const host = document.createElement('div');
+  host.style.display = 'none';
+  document.body.appendChild(host);
+  const txt = (el) => (el ? (el.innerText || el.textContent || '').trim() : null);
+  const eur = (t) => {
+    if (!t) return null;
+    const m = String(t).match(/(\d+),(\d{2})/);
+    return m ? parseFloat(m[1] + '.' + m[2]) : null;
+  };
+  const out = {};
+  (Array.isArray(data) ? data : []).forEach((frag, i) => {
+    const nan = ids[i];
+    if (!frag || !frag.content) return;
+    host.innerHTML = frag.content;
+    const link  = host.querySelector('[data-testid="offer-title-link"]');
+    const img   = host.querySelector('[data-testid="offer-image"]');
+    const info  = [...host.querySelectorAll('.cor-offer-information__additional')]
+                    .map(x => txt(x)).filter(Boolean);
+    const label = txt(host.querySelector('.cor-offer-price__tag-label'));
+    const price = txt(host.querySelector('.cor-offer-price__tag-price'));
+    const block = txt(host.querySelector('.cor-offer-price'));
+    let before = null;
+    if (block) {
+      const all = [...block.matchAll(/(\d+,\d{2})/g)].map(m => m[1]);
+      const p = price ? price.match(/(\d+,\d{2})/) : null;
+      const others = all.filter(a => !p || a !== p[1]);
+      if (others.length) before = others[others.length - 1];
+    }
+    const joined = info.join(' ');
+    const title = link ? (link.getAttribute('data-offer-title') || txt(link))
+                       : txt(host.querySelector('h3'));
+    if (!title) return;
+    const base = (joined.match(/\(([^)]*=\s*[\d,]+\s*€)\)/) || [])[1] || null;
+    const dep  = (joined.match(/zzgl\.\s*([\d,]+)\s*€\s*Pfand/) || [])[1] || null;
+    out[nan] = {
+      title, info: joined || null, price: eur(price), price_before: eur(before),
+      base_price: base, deposit: dep ? parseFloat(dep.replace(',', '.')) : null,
+      label, image: img ? (img.getAttribute('src') || img.getAttribute('data-src')) : null,
+      nan,
+    };
+  });
+  host.remove();
+  return out;
+}"""
+
+
+def _detail_items(nans, ww_ident, week):
+    import uuid
+    return [{"id": str(uuid.uuid4()), "name": "offer-tile-by-nan", "namespace": "cor",
+             "params": {"nan": str(n), "wwIdent": str(ww_ident),
+                        "heroStyles": "false", "showDuration": "auto",
+                        "enableDetailDeeplink": "true", "week": week}}
+            for n in nans]
+
+
+async def fetch_details(s, nans, ww_ident, week, log=print, batch=15):
+    """Offer details for a list of article numbers, via the fragment API."""
+    out = {}
+    nans = list(nans)
+    for i in range(0, len(nans), batch):
+        chunk = nans[i:i + batch]
+        try:
+            res = await s.page.evaluate(
+                DETAIL_JS,
+                [FRONTEND_INCLUDES, _detail_items(chunk, ww_ident, week), chunk])
+        except Exception as e:
+            log(f"    rewe: Detail-Abruf fehlgeschlagen ({type(e).__name__})")
+            continue
+        if isinstance(res, dict) and "__err" not in res:
+            out.update(res)
+        if (i // batch) % 5 == 4:
+            log(f"    rewe: Details {len(out)}/{len(nans)}")
+    return out
 
 
 # Akamai answers some loads with an interstitial titled "Nur einen Moment…"
@@ -240,101 +331,55 @@ async def fingerprint(s, ww_ident):
         return {}
 
 
-async def _hydrate(s, ww_ident, log):
-    """Full details for one market -- the slow path."""
-    if not await _open_market(s, ww_ident, settle=8000):
-        log(f"    rewe: Markt {ww_ident} blieb gesperrt")
-        return []
-    last, stable = -1, 0
-    for _ in range(90):
-        await s.page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-        await s.page.wait_for_timeout(500)
-        c = await s.page.evaluate("""() => ({
-            rendered: document.querySelectorAll(
-                'div.sos-offer[data-rendered="true"]').length,
-            total: document.querySelectorAll('div.sos-offer').length})""")
-        if c["total"] and c["rendered"] >= c["total"]:
-            break
-        moved = await s.page.evaluate("""() => {
-            const p = [...document.querySelectorAll('div.sos-offer')]
-              .filter(e => e.getAttribute('data-rendered') !== 'true');
-            if (!p.length) return 0;
-            p[0].scrollIntoView({block: 'center'});
-            return p.length;
-        }""")
-        if not moved:
-            break
-        await s.page.wait_for_timeout(550)
-        stable = stable + 1 if c["rendered"] == last else 0
-        if stable > 20:
-            break
-        last = c["rendered"]
-    return await s.page.evaluate(EXTRACT_JS)
-
-
-def _cover(fps):
-    """Fewest markets whose articles together cover every article seen."""
-    remaining = set().union(*(set(v) for v in fps.values())) if fps else set()
-    chosen = []
-    while remaining:
-        best = max(fps, key=lambda m: len(remaining & set(fps[m])))
-        gain = remaining & set(fps[best])
-        if not gain:
-            break
-        chosen.append(best)
-        remaining -= gain
-    return chosen
-
-
 async def scrape_all(s, market_list, log=print):
-    """Offers across every REWE market, each tagged with the markets carrying it."""
+    """Offers across every REWE market, each tagged with the markets carrying it.
+
+    Two cheap passes instead of one expensive one: read every market's article
+    numbers straight out of the unhydrated DOM, then pull each article's details
+    once from the fragment API. No tile ever has to render, which is what made
+    this slow locally and impossible on a CI runner, where they never render.
+    """
     idents = [m["market_id"] for m in market_list]
     if not idents:
         return []
 
-    fps = {}
+    by_market, cats, week, blocked = {}, {}, None, 0
     for i, ww in enumerate(idents, 1):
-        fps[ww] = await fingerprint(s, ww)
+        fp = await fingerprint(s, ww)
+        if not fp.get("cats"):
+            blocked += 1
+        else:
+            by_market[ww] = set(fp["cats"])
+            for nan, cat in fp["cats"].items():
+                cats.setdefault(nan, cat)
+            week = week or fp.get("week")
         if i % 15 == 0 or i == len(idents):
             log(f"    rewe: {i}/{len(idents)} Märkte erfasst")
-    blocked = [k for k, v in fps.items() if not v]
-    fps = {k: v for k, v in fps.items() if v}
     if blocked:
-        log(f"    rewe: {len(blocked)} Märkte nicht lesbar (Sperrseite)")
-    if not fps:
+        log(f"    rewe: {blocked} Märkte nicht lesbar (Sperrseite)")
+    if not by_market:
         log("  rewe: keine Angebote gefunden - vermutlich durchgehend gesperrt")
         return []
 
-    union = set().union(*(set(v) for v in fps.values()))
-    cover = _cover(fps)
-    log(f"  rewe: {len(union)} Artikel in {len(fps)} Märkten; "
-        f"{len(cover)} Märkte decken alle ab")
+    union = sorted(set().union(*by_market.values()))
+    week = week or dt.date.today().strftime("%G/%V")
+    log(f"  rewe: {len(union)} Artikel in {len(by_market)} Märkten, Woche {week}")
 
-    details = {}
-    for i, ww in enumerate(cover, 1):
-        try:
-            rows = await _hydrate(s, ww, log)
-        except Exception as e:
-            log(f"    rewe: Markt {ww} nicht lesbar ({type(e).__name__})")
-            continue
-        for r in rows:
-            if r.get("nan") and r["nan"] not in details and r.get("title"):
-                details[r["nan"]] = r
-        log(f"    rewe: Details {i}/{len(cover)} — {len(details)}/{len(union)} Artikel")
-        if len(details) >= len(union):
-            break
+    # Details do not vary by market; ask through the market carrying the most.
+    anchor = max(by_market, key=lambda m: len(by_market[m]))
+    details = await fetch_details(s, union, anchor, week, log=log)
 
-    by_market = {ww: set(v) for ww, v in fps.items()}
     out = []
     for nan, r in details.items():
-        markets = sorted(ww for ww, nans in by_market.items() if nan in nans)
+        markets = sorted(m for m, nans in by_market.items() if nan in nans)
+        if not markets:
+            continue
         row = _norm(r, None)
-        row["category"] = (fps[markets[0]].get(nan) or r.get("category") or "")\
-            .replace("-", " ").title() or "Angebote"
+        row["category"] = (cats.get(nan) or "").replace("-", " ").title() or "Angebote"
         row["markets"] = markets
         row["offer_ref"] = nan
         out.append(row)
-    missing = len(union) - len(details)
+    missing = len(union) - len(out)
     log(f"  rewe: {len(out)} Angebote"
         + (f" ({missing} Artikel ohne Details)" if missing else ""))
     return out
