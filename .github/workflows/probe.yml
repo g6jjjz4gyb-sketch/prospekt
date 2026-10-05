@@ -32,6 +32,11 @@ jobs:
       - name: Mit gebündeltem Chromium prüfen
         run: python tools/cloud_probe.py || true
 
+      - name: REWE-Strategien vergleichen
+        env:
+          PROBE_CHANNEL: chrome
+        run: python tools/rewe_strategies.py || true
+
       - name: REWE im Detail (warum 0 Angebote im vollen Lauf?)
         env:
           PROBE_CHANNEL: chrome
