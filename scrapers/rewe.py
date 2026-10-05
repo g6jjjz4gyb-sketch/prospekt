@@ -203,15 +203,37 @@ FINGERPRINT_JS = """
 }"""
 
 
-async def _open_market(s, ww_ident, settle=5000):
-    await s.ctx.clear_cookies()
-    await s.ctx.add_cookies([market_cookie(ww_ident)])
-    await s.goto(f"{BASE}/angebote/", settle=settle)
+# Akamai answers some loads with an interstitial titled "Nur einen Moment…"
+# instead of the page. It is intermittent -- from a datacenter IP it hit often
+# enough to zero out a whole run, while a retry clears it. Treat it as a
+# transient condition rather than an empty market.
+INTERSTITIAL = "Nur einen Moment"
+
+
+async def _open_market(s, ww_ident, settle=5000, tries=4):
+    """Open a market's offers page, retrying past the bot interstitial."""
+    for attempt in range(tries):
+        await s.ctx.clear_cookies()
+        await s.ctx.add_cookies([market_cookie(ww_ident)])
+        await s.goto(f"{BASE}/angebote/", settle=settle + attempt * 2000)
+        try:
+            title = await s.page.title()
+        except Exception:
+            title = ""
+        if INTERSTITIAL not in title:
+            n = await s.page.evaluate(
+                "() => document.querySelectorAll('div.sos-offer').length")
+            if n:
+                return True
+        if attempt < tries - 1:
+            await s.page.wait_for_timeout(3000 * (attempt + 1))
+    return False
 
 
 async def fingerprint(s, ww_ident):
     """Article numbers a market carries, without waiting for hydration."""
-    await _open_market(s, ww_ident)
+    if not await _open_market(s, ww_ident):
+        return {}
     try:
         return await s.page.evaluate(FINGERPRINT_JS)
     except Exception:
@@ -220,7 +242,9 @@ async def fingerprint(s, ww_ident):
 
 async def _hydrate(s, ww_ident, log):
     """Full details for one market -- the slow path."""
-    await _open_market(s, ww_ident, settle=8000)
+    if not await _open_market(s, ww_ident, settle=8000):
+        log(f"    rewe: Markt {ww_ident} blieb gesperrt")
+        return []
     last, stable = -1, 0
     for _ in range(90):
         await s.page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
@@ -273,9 +297,12 @@ async def scrape_all(s, market_list, log=print):
         fps[ww] = await fingerprint(s, ww)
         if i % 15 == 0 or i == len(idents):
             log(f"    rewe: {i}/{len(idents)} Märkte erfasst")
+    blocked = [k for k, v in fps.items() if not v]
     fps = {k: v for k, v in fps.items() if v}
+    if blocked:
+        log(f"    rewe: {len(blocked)} Märkte nicht lesbar (Sperrseite)")
     if not fps:
-        log("  rewe: keine Angebote gefunden")
+        log("  rewe: keine Angebote gefunden - vermutlich durchgehend gesperrt")
         return []
 
     union = set().union(*(set(v) for v in fps.values()))
