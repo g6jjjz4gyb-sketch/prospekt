@@ -228,12 +228,23 @@ measured it. Two findings shaped the setup:
   exactly as they do locally. What is being scored is the browser fingerprint,
   not the datacenter IP — so `playwright install chrome` is a hard requirement
   of the workflow, not a nicety.
-- **REWE intermittently serves an interstitial** titled "Nur einen Moment…"
-  instead of the page. It is not a hard block: the first cloud run lost all 436
-  REWE offers to it, while a strategy comparison over the same six markets
-  scored 6/6 both naively and with retries on a later attempt. `_open_market`
-  now detects that title and retries, and the run reports how many markets
-  stayed blocked rather than quietly returning nothing.
+- **REWE tiles never render on a runner.** The first cloud run read all 436
+  article numbers and still produced zero offers: the article numbers sit in
+  the unhydrated DOM, but the tile *contents* are injected afterwards, and that
+  injection simply never completed in CI. Scrolling 400 tiles into view took 34
+  minutes and yielded nothing.
+
+  The fix was to stop relying on rendering at all. Watching the network during
+  hydration showed each tile being filled by a `POST /api/frontend-includes`
+  with `{"name": "offer-tile-by-nan", "params": {"nan", "wwIdent", "week"}}` —
+  the same fragment API the market chooser uses. `fetch_details` now requests
+  those fragments directly, 15 at a time, and parses them in a detached element.
+  Three markets went from one market per 47 s to 380 offers in 47 s, and REWE
+  works in CI: 417 offers.
+
+- **REWE also serves an intermittent interstitial** titled "Nur einen Moment…".
+  `_open_market` detects that title and retries, and the run now reports how
+  many markets stayed blocked instead of quietly returning nothing.
 
 Everything else stays identical between Mac and runner — same scrapers, same
 `run.py`, same `build_site.py`.
