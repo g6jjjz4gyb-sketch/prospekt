@@ -31,7 +31,21 @@ fi
 echo $$ >"$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
-# Skip unless the published data is older than the current ISO week.
+# The site is normally refreshed by GitHub Actions, which runs whether or not
+# this Mac is on. So first ask the published page which week it is showing: if
+# it is already current, this machine has nothing to do. Only the first 64 KB
+# are fetched -- the masthead sits near the top of a 9 MB file.
+PUBLISHED_URL="https://g6jjjz4gyb-sketch.github.io/prospekt/"
+if [ "${1:-}" != "--force" ]; then
+  week_now=$(date '+%G / KW %V')
+  head_html=$(curl -sL --max-time 25 -r 0-65535 "$PUBLISHED_URL" 2>/dev/null) || head_html=""
+  if [ -n "$head_html" ] && printf '%s' "$head_html" | grep -q "Kalenderwoche <b>$week_now</b>"; then
+    log "$(date '+%F %T') übersprungen - veröffentlichte Seite ist aktuell ($week_now)"
+    exit 0
+  fi
+fi
+
+# Skip unless the local data is older than the current ISO week.
 if [ "${1:-}" != "--force" ]; then
   if BASE="$BASE" "$PY" - <<'PYEOF'
 import datetime as dt, json, os, sys
