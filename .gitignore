@@ -1,0 +1,15 @@
+# Virtual env and local publish checkouts
+.venv/
+.pages/
+.publish/
+
+# Generated: rebuilt by every run, far too large to version
+web/index.html
+web/img/
+data/latest.json
+data/offers-*.json
+logs/
+
+__pycache__/
+*.pyc
+.DS_Store

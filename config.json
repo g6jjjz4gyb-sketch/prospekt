@@ -1,0 +1,36 @@
+{
+  "location": {
+    "plz": "60306",
+    "city": "Frankfurt am Main",
+    "lat": 50.1188,
+    "lon": 8.6644,
+    "radius_km": 10,
+    "search_terms": [
+      "60306",
+      "60313",
+      "60322",
+      "60326",
+      "60388",
+      "60431",
+      "60486",
+      "60528",
+      "60599",
+      "65929"
+    ]
+  },
+  "markets": {
+    "resolved_at": null
+  },
+  "chains": [
+    "aldi_sued",
+    "lidl",
+    "penny",
+    "rewe",
+    "edeka",
+    "netto"
+  ],
+  "browser": {
+    "channel": "chrome",
+    "headless": true
+  }
+}
