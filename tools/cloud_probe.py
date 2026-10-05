@@ -114,5 +114,41 @@ async def main():
     return 0 if n_ok else 1
 
 
+
+
+async def probe_rewe_deep():
+    """Why does the full REWE pass find nothing on a runner when the simple
+    probe finds 200 offers? Mirror scrape_all's opening moves and report."""
+    async with Session(channel=os.environ.get("PROBE_CHANNEL") or None) as s:
+        out = []
+        # 1. exactly what scrape_all does
+        await s.ctx.clear_cookies()
+        await s.ctx.add_cookies([rewe.market_cookie("240259")])
+        await s.goto(f"{rewe.BASE}/angebote/", settle=5000)
+        info = await s.page.evaluate("""() => ({
+            url: location.href, title: document.title,
+            offers: document.querySelectorAll('div.sos-offer').length,
+            skeleton: document.querySelectorAll('.sos-offer__skeleton').length,
+            consent: !!document.querySelector('#usercentrics-root'),
+            body: (document.body.innerText || '').slice(0, 160).replace(/\\s+/g, ' '),
+        })""")
+        out.append(("clear_cookies + cookie + goto", info))
+        # 2. without clearing cookies first
+        await s.ctx.add_cookies([rewe.market_cookie("240259")])
+        await s.goto(f"{rewe.BASE}/angebote/", settle=7000)
+        info2 = await s.page.evaluate("""() => ({
+            url: location.href, title: document.title,
+            offers: document.querySelectorAll('div.sos-offer').length,
+            consent: !!document.querySelector('#usercentrics-root'),
+        })""")
+        out.append(("zweiter Aufruf, Cookies behalten", info2))
+        for label, i in out:
+            print(f"\n--- {label}")
+            for k, v in i.items():
+                print(f"    {k:9} {v}")
+
+
 if __name__ == "__main__":
+    if os.environ.get("PROBE_REWE_DEEP"):
+        sys.exit(asyncio.run(probe_rewe_deep()) or 0)
     sys.exit(asyncio.run(main()))

@@ -24,6 +24,11 @@ if [ -n "${GITHUB_ACTIONS:-}" ]; then
   rm -rf "$WORK"; mkdir -p "$WORK"
   cd "$WORK" || exit 0
   git init -q -b "$BRANCH"
+  # This is a *second*, freshly created repo -- the identity configured in the
+  # checkout does not reach it, and without one `git commit` fails silently
+  # enough to look like "nothing to commit".
+  git config user.name  "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
   git remote add origin \
     "https://x-access-token:${GITHUB_TOKEN:-$GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 else
@@ -40,8 +45,11 @@ touch .nojekyll                     # serve the file as-is, no Jekyll build
 
 week=$(date '+%G-W%V')
 git add -A >/dev/null
+if git diff --cached --quiet; then
+  echo "publish: keine Änderung gegenüber dem letzten Stand"; exit 0
+fi
 git commit -q -m "Angebote $week (Stand $(date '+%Y-%m-%d %H:%M'))" || {
-  echo "publish: nichts zu committen"; exit 0; }
+  echo "publish: commit fehlgeschlagen"; exit 1; }
 git branch -M "$BRANCH" >/dev/null 2>&1
 
 if git push -f -q origin "$BRANCH" 2>&1; then

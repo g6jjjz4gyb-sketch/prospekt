@@ -31,3 +31,9 @@ jobs:
 
       - name: Mit gebündeltem Chromium prüfen
         run: python tools/cloud_probe.py || true
+
+      - name: REWE im Detail (warum 0 Angebote im vollen Lauf?)
+        env:
+          PROBE_CHANNEL: chrome
+          PROBE_REWE_DEEP: "1"
+        run: python tools/cloud_probe.py || true

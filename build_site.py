@@ -80,6 +80,18 @@ header.mast{border-bottom:2px solid var(--ink); background:var(--card)}
   border:1px solid var(--line); border-radius:4px; padding:1px 5px; color:var(--ink-2);
 }
 
+/* ---------- staleness warning ---------- */
+.stale{
+  background:var(--signal); color:var(--signal-ink); border-block:2px solid var(--ink);
+  padding:13px 0; font-size:14px;
+}
+.stale .wrap{display:flex; gap:12px; align-items:baseline; flex-wrap:wrap}
+.stale b{font-weight:700}
+.stale .tag{
+  font-family:"Barlow Condensed",sans-serif; font-weight:700; text-transform:uppercase;
+  letter-spacing:.06em; font-size:17px; line-height:1; white-space:nowrap;
+}
+
 /* ---------- source strip ---------- */
 .sources{display:flex; flex-wrap:wrap; gap:8px; padding:14px 0 18px}
 .src{
@@ -301,11 +313,18 @@ footer a{color:var(--signal)}
       <div><b>__TOTAL__</b> Angebote · <b>__FREECOUNT__</b> gratis oder Cashback</div>
       <div><b>__NMARKETS__</b> Märkte im Umkreis von <b>__RADIUS__ km</b></div>
       <div>Stand <b>__STAMP__</b></div>
-      <div>Nächste Aktualisierung <span class="kbd">Mo __NEXT__ · 06:30</span></div>
+      <div id="nextline">Nächste Aktualisierung <span class="kbd">Mo __NEXT__</span></div>
     </div>
   </div>
   <div class="wrap"><div class="sources">__SOURCES__</div></div>
 </header>
+
+<div class="stale" id="stale" hidden>
+  <div class="wrap">
+    <span class="tag">Veraltet</span>
+    <span id="staletext"></span>
+  </div>
+</div>
 
 <section class="band">
   <div class="wrap band-in">
@@ -502,6 +521,36 @@ function render(append) {
   document.getElementById('more').hidden = rows.length <= state.shown;
   document.getElementById('none').hidden = rows.length !== 0;
 }
+
+/* ---------- is what we are showing still current? ----------
+   Decided in the viewer's browser, not at build time: a page built in week 36
+   and still being served in week 41 used to go on promising a refresh that had
+   already been missed. */
+(function () {
+  const isoWeek = (d) => {
+    const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+    const start = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+    const n = Math.ceil(((t - start) / 86400000 + 1) / 7);
+    return t.getUTCFullYear() + '-W' + String(n).padStart(2, '0');
+  };
+  const now = new Date();
+  const shown = DATA.iso_week;
+  const current = isoWeek(now);
+  const line = document.getElementById('nextline');
+  if (shown === current) return;                 // all good, leave the page as built
+
+  const built = new Date(DATA.generated_at);
+  const days = Math.max(1, Math.round((now - built) / 86400000));
+  const box = document.getElementById('stale');
+  document.getElementById('staletext').innerHTML =
+    `Diese Angebote stammen aus <b>Kalenderwoche ${shown.replace('-W', ' / KW ')}</b> ` +
+    `und sind seit ${days} Tagen nicht aktualisiert worden. ` +
+    `Die Aktionszeiträume sind damit abgelaufen — die Preise gelten so nicht mehr.`;
+  box.hidden = false;
+  if (line) line.innerHTML =
+    'Aktualisierung <span class="kbd">ausstehend</span>';
+})();
 
 /* ---------- offer detail ---------- */
 const dlg = document.getElementById('detail');
